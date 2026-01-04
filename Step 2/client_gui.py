@@ -3,7 +3,7 @@ from tkinter import messagebox
 import random
 from client import ChatLogic
 
-# --- BIDI SUPPORT (חובה בשביל לסדר את העברית ויזואלית) ---
+# --- BIDI SUPPORT (Required for visual Hebrew alignment) ---
 try:
     from bidi.algorithm import get_display
     HAS_BIDI = True
@@ -12,17 +12,14 @@ except ImportError:
     print("Warning: python-bidi not found. Please install via: pip install python-bidi")
 
 def fix_text_bidi(text):
-    """
-    פונקציה שמסדרת את הטקסט לתצוגה בלבד.
-    היא לא משנה את המידע שנשלח, רק איך שהוא נראה על המסך.
-    """
+    """Fixes text for display only (does not change sent data)"""
     if not text: return ""
     if HAS_BIDI:
         return get_display(text)
-    return text # Fallback
+    return text
 
 def is_hebrew(text):
-    """בודק אם יש עברית בטקסט כדי להחליט על יישור לימין"""
+    """Checks if text contains Hebrew for right alignment"""
     return any("\u0590" <= c <= "\u05ea" for c in text)
 
 # --- CONFIG & ASSETS ---
@@ -31,10 +28,7 @@ EMOJIS = ["✨", "💖", "🦋", "🎀", "👑", "💋", "🌸", "🦄", "💅",
 class Marquee(tk.Canvas):
     def __init__(self, parent, text, bg, fg):
         super().__init__(parent, bg=bg, height=30, highlightthickness=0)
-        
-        # גם בכותרת רצה נפעיל את התיקון כדי שהשמות לא יהיו הפוכים
         self.text = fix_text_bidi(text)
-        
         self.fg = fg
         self.width = 800
         self.text_obj = self.create_text(0, 15, text=self.text, fill=fg, font=("Comic Sans MS", 12, "bold"), anchor='w')
@@ -81,6 +75,9 @@ class Y2KPinkPaletteGUI:
         self.current_chat_partner = None
         self.chat_history = {} 
         self.online_users = [] 
+
+        # Track the last message sent for potential rollback
+        self.last_optimistic_msg_indices = None
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.build_login()
@@ -163,17 +160,14 @@ class Y2KPinkPaletteGUI:
         mq = Marquee(self.root, marquee_txt, self.palette["deep_mauve"], "white")
         mq.pack(side="top", fill="x")
 
-        # --- SIDEBAR (Left) ---
         sidebar = tk.Frame(self.root, bg=self.palette["salmon"], width=280, bd=5, relief="groove")
         sidebar.pack(side="left", fill="y", padx=5, pady=5)
         
-        # --- PROFILE SECTION ---
         profile_frame = tk.Frame(sidebar, bg=self.palette["light_pink"], bd=3, relief="ridge", pady=10)
         profile_frame.pack(fill="x", padx=5, pady=(5, 10))
 
         tk.Label(profile_frame, text="💅", bg=self.palette["light_pink"], font=("Arial", 35)).pack()
         
-        # תיקון תצוגת שם משתמש (למקרה שהוא בעברית)
         display_nick = fix_text_bidi(self.nickname)
         tk.Label(profile_frame, text=display_nick, bg=self.palette["light_pink"], 
                  fg=self.palette["hot_pink"], font=("Comic Sans MS", 14, "bold")).pack()
@@ -188,7 +182,6 @@ class Y2KPinkPaletteGUI:
 
         tk.Frame(sidebar, bg="white", height=2).pack(fill="x", padx=10, pady=5)
 
-        # --- SQUAD LIST ---
         tk.Label(sidebar, text="★ SQUAD ★", bg=self.palette["salmon"], fg="white", 
                  font=("Comic Sans MS", 16, "bold")).pack(pady=5)
         
@@ -198,17 +191,12 @@ class Y2KPinkPaletteGUI:
         self.lst_users.pack(fill="both", expand=True, padx=10, pady=5)
         self.lst_users.bind("<<ListboxSelect>>", self.on_select_user)
 
-        # --- MAIN AREA (Right) ---
         main_area = tk.Frame(self.root, bg=self.palette["light_pink"])
         main_area.pack(side="right", fill="both", expand=True, padx=5, pady=5)
 
-        # 1. Input Frame
         input_frame = tk.Frame(main_area, bg=self.palette["rose"], bd=5, relief="flat", pady=8, padx=8)
         input_frame.pack(side="bottom", fill="x", pady=0)
 
-        # --- תיקון חשוב לתיבת ההקלדה ---
-        # אנחנו לא נוגעים בטקסט בזמן הקלדה (כדי למנוע קפיצות רווח).
-        # רק מגדירים justify='right' כדי שזה יראה טבעי יותר לעברית.
         self.ent_msg = tk.Entry(input_frame, font=self.f_norm, bg=self.palette["light_pink"], 
                                 fg=self.palette["deep_mauve"], bd=0, justify='right')
         self.ent_msg.pack(side="left", fill="x", expand=True, padx=(0, 10), ipady=5)
@@ -218,29 +206,22 @@ class Y2KPinkPaletteGUI:
                              font=("Impact", 12), command=self.send, bd=0, padx=15)
         btn_send.pack(side="right")
 
-        # 2. Target Label
         self.lbl_target = tk.Label(main_area, text="Choose a BFF to chat! <3", 
                                    bg=self.palette["light_pink"], fg=self.palette["hot_pink"], 
                                    font=("Comic Sans MS", 18, "bold"))
         self.lbl_target.pack(side="top", pady=10)
 
-        # 3. Chat Text
         self.txt_chat = tk.Text(main_area, bg="white", fg=self.palette["deep_mauve"],
                                 font=("Comic Sans MS", 11), state="disabled", 
                                 relief="flat", bd=5)
         self.txt_chat.pack(side="top", fill="both", expand=True, padx=5)
         
-        # --- הגדרת תגיות חכמה (Tags) ---
-        # תגיות LTR (אנגלית)
         self.txt_chat.tag_config("me_ltr", foreground=self.palette["hot_pink"], font=("Verdana", 10, "bold"), justify="left")
         self.txt_chat.tag_config("them_ltr", foreground=self.palette["deep_mauve"], font=("Verdana", 10, "bold"), justify="left")
-        
-        # תגיות RTL (עברית) - היישור הוא לימין (Right)
         self.txt_chat.tag_config("me_rtl", foreground=self.palette["hot_pink"], font=("Verdana", 10, "bold"), justify="right")
         self.txt_chat.tag_config("them_rtl", foreground=self.palette["deep_mauve"], font=("Verdana", 10, "bold"), justify="right")
-
-        # תגיות מערכת
         self.txt_chat.tag_config("sys", foreground="gray", justify="center", font=("Arial", 9, "italic"))
+        self.txt_chat.tag_config("error", foreground="red", justify="center", font=("Arial", 10, "bold"))
         self.txt_chat.tag_config("join", foreground="green", justify="center", font=("Arial", 8, "bold"))
         self.txt_chat.tag_config("leave", foreground="red", justify="center", font=("Arial", 8, "bold"))
 
@@ -257,26 +238,56 @@ class Y2KPinkPaletteGUI:
             left = old_set - new_set
             
             self.online_users = new_users
-            
             self.root.after(0, lambda: self.update_list_and_notify(joined, left))
         
-        elif ":" in msg and not msg.startswith("System"):
+        # --- Server Error Handling ---
+        elif msg.startswith("System:"):
+            error_content = msg.split(":", 1)[1].strip()
+            
+            # --- Check if the error is "User not found" ---
+            # If so, remove the message we just optimistically added to the screen
+            if "not found" in error_content or "no longer online" in error_content:
+                self.root.after(0, self.delete_last_optimistic_message)
+
+            # Show alert to user
+            messagebox.showerror("Oops!", error_content)
+            # And write to log in red
+            self.root.after(0, lambda: self.display_system_msg(f"❌ {error_content}", "error"))
+
+        elif ":" in msg:
             try:
                 parts = msg.split(":", 1)
                 sender = parts[0].strip("[] ")
                 content = parts[1].strip()
                 
-                # שמירה בהיסטוריה כמו שזה (raw)
                 self.save_msg(sender, content, "them")
                 if self.current_chat_partner == sender:
-                    # שימוש בפונקציה החדשה להצגה
                     self.root.after(0, self.display_chat_message, sender, content, "them")
             except: pass
+
+    def delete_last_optimistic_message(self):
+        """Rolls back the last message from UI and history if server rejected it."""
+        if self.last_optimistic_msg_indices:
+            start_idx, end_idx = self.last_optimistic_msg_indices
+            
+            # Remove from visual chat
+            self.txt_chat.config(state="normal")
+            try:
+                self.txt_chat.delete(start_idx, end_idx)
+            except tk.TclError:
+                pass # Text widget might have changed, ignore safety
+            self.txt_chat.config(state="disabled")
+            
+            # Remove from history so it doesn't come back on refresh
+            if self.current_chat_partner in self.chat_history:
+                if self.chat_history[self.current_chat_partner]:
+                    self.chat_history[self.current_chat_partner].pop()
+            
+            self.last_optimistic_msg_indices = None
 
     def update_list_and_notify(self, joined, left):
         self.lst_users.delete(0, tk.END)
         for u in self.online_users:
-            # תיקון ויזואלי גם ברשימת המשתמשים
             self.lst_users.insert(tk.END, "🎀 " + fix_text_bidi(u))
             
         if self.current_chat_partner:
@@ -287,15 +298,11 @@ class Y2KPinkPaletteGUI:
             for u in left:
                 if u == self.current_chat_partner:
                     self.display_system_msg(f"~*~ {fix_text_bidi(u)} disconnected :( ~*~\n", "leave")
-                    messagebox.showinfo("Oh no!", f"{u} left the chat!")
 
     def on_select_user(self, e):
         sel = self.lst_users.curselection()
         if not sel: return
-        
-        # בגלל שהצגנו את השם הפוך ויזואלית ברשימה, צריך לקחת את השם האמיתי מהמערך
         real_name = self.online_users[sel[0]]
-        
         self.current_chat_partner = real_name
         self.lbl_target.config(text=f"~*~ {fix_text_bidi(real_name)} ~*~")
         self.refresh_chat()
@@ -303,12 +310,9 @@ class Y2KPinkPaletteGUI:
     def refresh_chat(self):
         self.txt_chat.config(state="normal")
         self.txt_chat.delete("1.0", tk.END)
-        
         if self.current_chat_partner in self.chat_history:
             for m in self.chat_history[self.current_chat_partner]:
-                # שימוש בפונקציה החכמה
                 self.display_chat_message(m['sender'], m['content'], m['type'], insert_mode=True)
-                
         self.txt_chat.see(tk.END)
         self.txt_chat.config(state="disabled")
 
@@ -322,40 +326,33 @@ class Y2KPinkPaletteGUI:
             messagebox.showinfo("Oops!", "Pick a friend first! 💕")
             return
         
-        # לוקחים את הטקסט הגולמי מהתיבה (בלי לשנות אותו!)
+        # --- No online check here! Relying on server ---
+        
         txt = self.ent_msg.get().strip()
         if not txt: return
         
         self.logic.send_private_message(self.current_chat_partner, txt)
         self.save_msg(self.current_chat_partner, txt, "me")
         
-        # הצגה למסך (כאן יתבצע התיקון)
+        # Optimistic update (displays immediately; if fails, we get System msg)
+        # Capture indices to allow deletion if server rejects it
+        start_idx = self.txt_chat.index("end-1c")
         self.display_chat_message("Me", txt, "me")
+        end_idx = self.txt_chat.index("end-1c")
+        self.last_optimistic_msg_indices = (start_idx, end_idx)
         
         self.ent_msg.delete(0, tk.END)
 
     def display_chat_message(self, sender, raw_content, base_type, insert_mode=False):
-        """
-        פונקציה מרכזית להצגת הודעת צ'אט.
-        מקבלת: תוכן גולמי.
-        מבצעת: בדיקת שפה, יישור לימין/שמאל, והפעלת get_display.
-        """
         if not insert_mode:
             self.txt_chat.config(state="normal")
         
-        # 1. בדיקת כיוון שפה
         is_rtl_content = is_hebrew(raw_content)
-        
-        # 2. בחירת תגית עיצוב
         align_suffix = "_rtl" if is_rtl_content else "_ltr"
         final_tag = base_type + align_suffix
-        
-        # 3. תיקון ויזואלי של הטקסט (הופך "שלום מה נשמע" לצורה שתוצג נכון)
         visual_content = fix_text_bidi(raw_content)
         
-        # 4. הרכבת השורה
         full_line = f"{sender}: {visual_content}\n"
-        
         self.txt_chat.insert(tk.END, full_line, final_tag)
         
         if not insert_mode:
@@ -363,9 +360,8 @@ class Y2KPinkPaletteGUI:
             self.txt_chat.config(state="disabled")
 
     def display_system_msg(self, txt, tag):
-        """הודעות מערכת פשוטות"""
         self.txt_chat.config(state="normal")
-        self.txt_chat.insert(tk.END, txt, tag)
+        self.txt_chat.insert(tk.END, txt + "\n", tag)
         self.txt_chat.see(tk.END)
         self.txt_chat.config(state="disabled")
 
