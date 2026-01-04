@@ -2,114 +2,136 @@ import socket
 import threading
 import sys
 
-# Configuration Constants
-DEFAULT_SERVER_HOST = '127.0.0.1'
-SERVER_PORT = 5500
+# --- Configuration & Constants ---
+DEFAULT_HOST = '127.0.0.1'
+DEFAULT_PORT = 55555
 BUFFER_SIZE = 1024
-ENCODING = 'ascii'
-KEYWORD_NAME_REQUEST = 'NAME'
+ENCODING = 'utf-8'
 
-class ChatClient:
-    """
-    A client application that connects to the chat server,
-    sends messages, and receives broadcasts.
-    """
-
-    def __init__(self, host, port):
+# --- Core Client Logic ---
+class ChatLogic:
+    """Handles socket connection, sending, and receiving messages."""
+    
+    def __init__(self, host=DEFAULT_HOST, port=DEFAULT_PORT):
         self.host = host
         self.port = port
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.nickname = ""
-        self.is_running = False
+        self.running = False
 
-    def start(self):
-        """Initiates the connection process."""
-        self.nickname = self._get_valid_nickname()
+    # -- Connection Management --
+
+    def connect(self, nickname):
+        """Attempts to connect to server and perform handshake."""
         try:
-            self.client_socket.connect((self.host, self.port))
-            self.is_running = True
+            self.client.connect((self.host, self.port))
+            self.client.send(nickname.encode(ENCODING))
             
-            # Start threads for simultaneous listening and writing
-            receive_thread = threading.Thread(target=self._receive_messages_loop)
-            write_thread = threading.Thread(target=self._send_messages_loop)
+            response = self.client.recv(BUFFER_SIZE).decode(ENCODING)
             
-            receive_thread.start()
-            write_thread.start()
+            if response.startswith("ERROR:"):
+                self.client.close()
+                self.client = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # Reset socket
+                return False, response
             
-            # Keep main thread alive to allow child threads to run
-            receive_thread.join()
-            write_thread.join()
-            
-        except ConnectionRefusedError:
-            print("Could not connect to the server. Is it running?")
+            self.nickname = nickname
+            self.running = True
+            return True, "Connected successfully"
         except Exception as e:
-            print(f"An error occurred: {e}")
-        finally:
-            self._close_connection()
+            return False, str(e)
 
-    def _get_valid_nickname(self):
-        """Prompts user for a non-empty nickname."""
-        while True:
-            name = input("Choose your name for the chat: ").strip()
-            if name:
-                return name
-            print("Name cannot be empty.")
-
-    def _receive_messages_loop(self):
-        """Continuously listens for messages from the server."""
-        while self.is_running:
-            try:
-                message = self.client_socket.recv(BUFFER_SIZE).decode(ENCODING)
-                if message == KEYWORD_NAME_REQUEST:
-                    self.client_socket.send(self.nickname.encode(ENCODING))
-                else:
-                    print(message)
-            except OSError:
-                # Socket likely closed or connection lost
-                print("Disconnected from server.")
-                self.is_running = False
-                self.client_socket.close()
-                break
-            except Exception as e:
-                print(f"Error receiving message: {e}")
-                self.is_running = False
-                break
-
-    def _send_messages_loop(self):
-        """Continuously waits for user input and sends it to the server."""
-        while self.is_running:
-            try:
-                text = input('')
-                # Handle command to exit locally (optional UX improvement)
-                if text.lower() == 'quit':
-                    self.is_running = False
-                    break
-                
-                message = '{}: {}'.format(self.nickname, text)
-                self.client_socket.send(message.encode(ENCODING))
-            except Exception as e:
-                print(f"Error sending message: {e}")
-                self.is_running = False
-                break
-        
-        self._close_connection()
-
-    def _close_connection(self):
-        """Safely closes the socket."""
+    def disconnect(self):
+        """Closes the connection cleanly."""
+        self.running = False
         try:
-            self.client_socket.close()
-            # Force exit since input() in the other thread might be blocking
-            sys.exit(0) 
+            self.client.close()
         except:
             pass
 
-if __name__ == '__main__':
-    print("--- Connection Configuration ---")
-    # Prompt for Server IP, defaulting to DEFAULT_SERVER_HOST if input is empty
-    user_input = input(f"Enter server IP (default {DEFAULT_SERVER_HOST}): ").strip()
-    target_host = user_input if user_input else DEFAULT_SERVER_HOST
+    # -- Messaging --
+
+    def send_private_message(self, target, message):
+        """Formats and sends a message to a specific user."""
+        try:
+            if not self.running: return
+            full_msg = f"{target}:{message}"
+            self.client.send(full_msg.encode(ENCODING))
+        except socket.error:
+            print("Failed to send message. Connection lost.")
+            self.disconnect()
+
+    def start_receiving(self, callback):
+        """Starts a background thread to listen for incoming messages."""
+        def receive_loop():
+            while self.running:
+                try:
+                    data = self.client.recv(BUFFER_SIZE).decode(ENCODING)
+                    if not data:
+                        break
+                    callback(data)
+                except:
+                    break
+            
+            self.disconnect()
+            callback("System: Disconnected from server.")
+
+        threading.Thread(target=receive_loop, daemon=True).start()
+
+# --- CLI / User Interface ---
+
+def run_cli_mode():
+    """Main entry point for command-line interface interaction."""
     
-    print(f"Connecting to {target_host}:{SERVER_PORT}...")
+    # 1. Setup Connection Details
+    host = input(f"Host IP (default {DEFAULT_HOST}): ").strip() or DEFAULT_HOST
+    port_input = input(f"Port (default {DEFAULT_PORT}): ").strip() or str(DEFAULT_PORT)
     
-    client = ChatClient(target_host, SERVER_PORT)
-    client.start()
+    try:
+        port = int(port_input)
+    except ValueError:
+        print("Invalid port.")
+        return
+
+    nickname = input("Choose a Nickname: ").strip()
+    if not nickname:
+        print("Nickname cannot be empty.")
+        return
+
+    # 2. Initialize Logic
+    logic = ChatLogic(host, port)
+    success, msg = logic.connect(nickname)
+
+    if not success:
+        print(f"Connection failed: {msg}")
+        return
+
+    print(f"Connected! Usage: 'TargetName: Your Message'")
+    print(f"Type 'exit' to quit.")
+
+    # 3. Define Output Handler
+    def cli_callback(message):
+        print(f"\n{message}\n> ", end="")
+
+    logic.start_receiving(cli_callback)
+
+    # 4. Input Loop
+    while True:
+        try:
+            user_input = input("> ")
+            if user_input.lower() == 'exit':
+                logic.disconnect()
+                break
+            
+            if ":" in user_input:
+                target, content = user_input.split(":", 1)
+                logic.send_private_message(target.strip(), content.strip())
+            else:
+                print("Invalid format! Use: TargetName: Message")
+                
+        except KeyboardInterrupt:
+            logic.disconnect()
+            break
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    run_cli_mode()

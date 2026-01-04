@@ -1,116 +1,162 @@
 import socket
 import threading
 
-# Configuration Constants
-DEFAULT_HOST = '127.0.0.1'
-PORT = 5500
-BUFFER_SIZE = 1024
-ENCODING = 'ascii'
+# --- Constants & Configuration ---
+HOST = '127.0.0.1'
+PORT = 55555
 
-# Protocol Constants
-KEYWORD_NAME_REQUEST = 'NAME'
-MSG_JOINED = '{} joined!'
-MSG_LEFT = '{} left!'
-MSG_CONNECTED = 'Connected to server!'
+# --- Globals ---
+clients = {}
 
-class ChatServer:
-    """
-    A multi-threaded chat server that handles multiple client connections
-    and broadcasts messages to all connected users.
-    """
+# --- Helper Functions (Parsing & Validation) ---
 
-    def __init__(self, host, port):
-        self.host = host
-        self.port = port
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        # Dictionary to map client sockets to their nicknames
-        self.connected_clients = {} 
+def parse_chat_message(message, sender_nickname):
+    """Parses the raw message string into target and content."""
+    result = {"target": None, "content": None, "error": None}
 
-    def start(self):
-        """Starts the server and listens for incoming connections."""
+    try:
+        parts = message.split(":", 1)
+        target = parts[0].strip()
+        content = parts[1].strip()
+
+        if target == sender_nickname:
+            result["error"] = "You cannot send a message to yourself."
+        elif not target or not content:
+            result["error"] = "Name or message cannot be empty."
+        else:
+            result["target"] = target
+            result["content"] = content
+
+    except IndexError:
+        result["error"] = "Invalid format. Use 'name:message'."
+    except Exception:
+        result["error"] = "Unknown parsing error."
+
+    return result
+
+def get_valid_nickname(client_socket):
+    """Handles the handshake to get a unique nickname."""
+    FORBIDDEN_NAMES = {"SYSTEM", "ERROR", "ONLINE_USERS"} | {user.upper() for user in list(clients)}
+
+    while True:
         try:
-            self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen()
-            print(f"Server started on {self.host}:{self.port}")
-            self._accept_connections()
-        except Exception as e:
-            print(f"Failed to start server: {e}")
-        finally:
-            self._shutdown_server()
-
-    def _accept_connections(self):
-        """Main loop to accept new client connections."""
-        while True:
-            try:
-                client_socket, client_address = self.server_socket.accept()
-                print(f"Connected with {client_address}")
-                
-                # Start a separate thread to handle the handshake and communication
-                client_thread = threading.Thread(
-                    target=self._handle_client_handshake, 
-                    args=(client_socket,)
-                )
-                client_thread.start()
-            except OSError:
-                break
-
-    def _handle_client_handshake(self, client_socket):
-        """Performs the initial name negotiation with the client."""
-        try:
-            client_socket.send(KEYWORD_NAME_REQUEST.encode(ENCODING))
-            nickname = client_socket.recv(BUFFER_SIZE).decode(ENCODING)
+            nickname = client_socket.recv(1024).decode('utf-8').strip()
             
-            self.connected_clients[client_socket] = nickname
+            if not nickname:
+                client_socket.send("ERROR: Nickname cannot be empty.".encode('utf-8'))
+                continue
             
-            print(f"Nickname is {nickname}")
-            self._broadcast_message(MSG_JOINED.format(nickname).encode(ENCODING))
-            client_socket.send(MSG_CONNECTED.encode(ENCODING))
+            if nickname.upper() in FORBIDDEN_NAMES:
+                client_socket.send("ERROR: Please try another nickname.".encode('utf-8'))
+                continue
             
-            # Proceed to main message handling loop
-            self._handle_client_messages(client_socket)
-        except Exception as e:
-            print(f"Handshake error: {e}")
-            client_socket.close()
+            return nickname
+            
+        except:
+            return None
 
-    def _handle_client_messages(self, client_socket):
-        """Listens for messages from a specific client and broadcasts them."""
-        while True:
-            try:
-                message = client_socket.recv(BUFFER_SIZE)
-                if not message:
-                    break
-                self._broadcast_message(message)
-            except:
-                self._remove_client(client_socket)
-                break
+# --- Connection Management (Actions) ---
 
-    def _broadcast_message(self, message):
-        """Sends a message to all connected clients."""
-        for client_sock in list(self.connected_clients.keys()):
-            try:
-                client_sock.send(message)
-            except:
-                # If sending fails, assume client disconnected
-                self._remove_client(client_sock)
+def close_connection(nickname):
+    """Safely closes a client connection and removes from list."""
+    if nickname not in clients:
+        return
 
-    def _remove_client(self, client_socket):
-        """Cleanly removes a client from the active list and notifies others."""
-        if client_socket in self.connected_clients:
-            nickname = self.connected_clients.pop(client_socket)
-            client_socket.close()
-            print(f"{nickname} disconnected.")
-            self._broadcast_message(MSG_LEFT.format(nickname).encode(ENCODING))
-
-    def _shutdown_server(self):
-        """Closes the server socket."""
-        print("Shutting down server...")
-        self.server_socket.close()
-
-if __name__ == '__main__':
-    print("--- Server Configuration ---")
-    # Prompt for IP, defaulting to DEFAULT_HOST if input is empty
-    user_input = input(f"Enter IP to bind (default {DEFAULT_HOST}): ").strip()
-    selected_host = user_input if user_input else DEFAULT_HOST
+    client_socket = clients.pop(nickname)
     
-    chat_server = ChatServer(selected_host, PORT)
-    chat_server.start()
+    try:
+        client_socket.close()
+        print(f"Connection for {nickname} closed.")
+    except Exception as e:
+        print(f"Error closing socket for {nickname}: {e}")
+
+def broadcast_online_users():
+    """Sends the updated list of users to everyone."""
+    user_list_msg = "ONLINE_USERS:" + ",".join(clients.keys())
+    
+    for client_name in list(clients.keys()):
+        try:
+            clients[client_name].send(user_list_msg.encode('utf-8'))
+        except:
+            try:
+                client_socket = clients.pop(nickname)
+                client_socket.close()
+            except Exception as e:
+                print(f"Error closing socket for {nickname}: {e}")
+                
+
+def kick_client(nickname):
+    """Wrapper to close connection and update list."""
+    close_connection(nickname)
+    broadcast_online_users()
+
+# --- Core Server Logic ---
+
+def handle_client(client_socket, nickname):
+    """Main loop for handling a single client's messages."""
+    while True:
+        try:
+            message = client_socket.recv(1024).decode('utf-8')
+
+            if not message:
+                print(f"Connection closed by {nickname}")
+                break
+
+            res = parse_chat_message(message, nickname)
+            
+            if res["error"]:
+                client_socket.send(f"System: {res['error']}".encode('utf-8'))
+                continue
+
+            target, msg_content = res["target"], res["content"]
+
+            if target not in clients:
+                client_socket.send(f"System: User '{target}' not found.".encode('utf-8'))
+                continue
+
+            recipient_socket = clients[target]
+            try:
+                recipient_socket.send(f"[{nickname}]: {msg_content}".encode('utf-8'))
+            except (socket.error, BrokenPipeError):
+                print(f"Liveness Probe Failed: {target} is gone.")
+                kick_client(target)
+                client_socket.send(f"System: {target} is no longer online.".encode('utf-8'))
+                
+        except (ConnectionResetError, socket.error):
+            break
+            
+    kick_client(nickname)
+
+def start_server():
+    """Main entry point to start the server socket."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind((HOST, PORT))
+    server.listen(10)
+    print(f"Server is listening on {HOST}:{PORT}...")
+
+    while True:
+        try:
+            client_socket, address = server.accept()
+            nickname = get_valid_nickname(client_socket)
+            
+            if not nickname:
+                client_socket.close()
+                continue
+
+            clients[nickname] = client_socket
+            print(f"New User: {nickname} from {address}")
+            client_socket.send("OK: Welcome".encode('utf-8'))
+
+            broadcast_online_users()
+
+            threading.Thread(target=handle_client, 
+                             args=(client_socket, nickname), 
+                             daemon=True).start()
+            
+        except Exception as e:
+            print(f"Server Error: {e}")
+            break
+
+# --- Main Execution ---
+if __name__ == "__main__":
+    start_server()
