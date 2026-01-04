@@ -54,7 +54,6 @@
 - Multi‑threading לטיפול במספר לקוחות.
 - פרוטוקול הודעות: `TargetName:Message`.
 - ממשק GUI ו‑CLI.
-- תמיכה מלאה בעברית (RTL).
 - טיפול בניתוקים וחסימת הודעות ריקות.
 
 ### 🛠 הוראות התקנה והרצה
